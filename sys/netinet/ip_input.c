@@ -498,16 +498,6 @@ ip_input(struct mbuf *m)
 		goto ours;
 	}
 
-	if (m->m_flags & M_PASSIN) {
-		/* Dummynet reinjected this packet. */
-		m->m_flags &= ~M_PASSIN;
-		ip = mtod(m, struct ip *);
-		hlen = ip->ip_hl << 2;
-		ip_len = ntohs(ip->ip_len);
-		ifp = m->m_pkthdr.rcvif;
-		goto passin;
-	}
-
 	IPSTAT_INC(ips_total);
 
 	if (__predict_false(m->m_pkthdr.len < sizeof(struct ip)))
@@ -655,15 +645,8 @@ tooshort:
 		m->m_flags &= ~M_FASTFWD_OURS;
 		goto ours;
 	}
-passin:
-	/* The unspecified address can appear only as a src address - RFC1122 */
-	if (__predict_false(ntohl(ip->ip_dst.s_addr) == INADDR_ANY)) {
-		IPSTAT_INC(ips_badaddr);
-		goto bad;
-	}
-
 	if (m->m_flags & M_IP_NEXTHOP) {
-		{
+		if (m_tag_find(m, PACKET_TAG_IPFORWARD, NULL) != NULL) {
 			/*
 			 * Directly ship the packet on.  This allows
 			 * forwarding packets originally destined to us
@@ -672,6 +655,18 @@ passin:
 			ip_forward(m, 1);
 			return;
 		}
+	}
+passin:
+	/*
+	 * The unspecified address can appear only as a src address - RFC1122.
+	 *
+	 * The check is deferred to here to give firewalls a chance to block
+	 * (and log) such packets.  ip_tryforward() will not process such
+	 * packets.
+	 */
+	if (__predict_false(ntohl(ip->ip_dst.s_addr) == INADDR_ANY)) {
+		IPSTAT_INC(ips_badaddr);
+		goto bad;
 	}
 
 	/*
